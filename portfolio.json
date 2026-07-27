@@ -1,0 +1,25 @@
+{
+  "cash": 7919300.0,
+  "holdings": {
+    "ACB": {
+      "quantity": 30,
+      "avg_price": 0.0
+    },
+    "FPT": {
+      "quantity": 140,
+      "avg_price": 92.33
+    },
+    "PC1": {
+      "quantity": 240,
+      "avg_price": 22.58
+    },
+    "TCX": {
+      "quantity": 122,
+      "avg_price": 45.89
+    },
+    "VJC": {
+      "quantity": 10,
+      "avg_price": 0.0
+    }
+  }
+}

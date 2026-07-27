@@ -1,0 +1,22 @@
+# Environment variables & secrets (CRITICAL: Do not commit!)
+.env
+*.env
+
+# Python bytecode & cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# SQLite databases & runtime data
+*.db
+audit_log.db
+
+# IDE & OS files
+.vscode/
+.idea/
+.DS_Store
