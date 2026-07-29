@@ -1,12 +1,12 @@
 {
-  "cash": 7919300.0,
+  "cash": 4096000.0,
   "holdings": {
     "ACB": {
       "quantity": 30,
       "avg_price": 0.0
     },
     "FPT": {
-      "quantity": 140,
+      "quantity": 200,
       "avg_price": 92.33
     },
     "PC1": {
