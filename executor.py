@@ -52,6 +52,12 @@ class TradeOrder(BaseModel):
         return self
 
 
+def is_sell_order(order: TradeOrder) -> bool:
+    """Kiểm tra xem lệnh có phải là lệnh bán (SELL hoặc CUT_LOSS) hay không."""
+    return order.action in ("SELL", "CUT_LOSS")
+
+
+
 def extract_json(raw_text: str) -> str:
     """Bóc tách JSON object hoặc JSON array từ raw text bằng regex.
 

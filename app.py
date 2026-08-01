@@ -10,7 +10,7 @@ import streamlit as st
 from pydantic import ValidationError
 
 from builder import load_portfolio, save_portfolio, build_prompt, load_prompt_config
-from executor import extract_json, validate_order, execute_order
+from executor import extract_json, validate_order, execute_order, is_sell_order
 from db import init_db, insert_log, get_logs
 from analyst_agent import AnalystAgent
 
@@ -35,6 +35,9 @@ if "analysis_result" not in st.session_state:
 
 if "analysis_msg" not in st.session_state:
     st.session_state.analysis_msg = None
+
+if "pending_sell_orders" not in st.session_state:
+    st.session_state.pending_sell_orders = []
 
 # ── Sidebar: Portfolio Overview + Audit Logs ───────────────────────
 with st.sidebar:
@@ -118,7 +121,7 @@ with tab_trading:
             if not raw_input.strip():
                 st.warning("Vui lòng paste JSON response trước khi execute.")
             else:
-                # Pipeline: extract → validate → execute
+                # Pipeline: extract → validate → split (auto execute BUY/HOLD vs pending approval for SELL/CUT_LOSS)
                 try:
                     # Bước 1: Regex extract JSON
                     json_str = extract_json(raw_input)
@@ -126,28 +129,43 @@ with tab_trading:
                     # Bước 2: Pydantic validate (Trả về list các TradeOrder)
                     orders = validate_order(json_str)
 
-                    # Bước 3: Load portfolio mới nhất, deep copy để tránh side-effect (Atomic)
-                    current_portfolio = load_portfolio()
-                    updated_portfolio = copy.deepcopy(current_portfolio)
+                    # Bước 3: Phân loại lệnh
+                    auto_exec_orders = [o for o in orders if not is_sell_order(o)]
+                    pending_sells = [o for o in orders if is_sell_order(o)]
 
-                    for order in orders:
-                        updated_portfolio = execute_order(order, updated_portfolio)
+                    # Bước 4: Thực thi tự động cho các lệnh MUA/GIỮ
+                    if auto_exec_orders:
+                        current_portfolio = load_portfolio()
+                        updated_portfolio = copy.deepcopy(current_portfolio)
 
-                    # Bước 4: Persist - ghi portfolio + audit log
-                    save_portfolio(updated_portfolio)
-                    for order in orders:
-                        insert_log(order.model_dump())
+                        for order in auto_exec_orders:
+                            updated_portfolio = execute_order(order, updated_portfolio)
 
-                    # Bước 5: Feedback tổng hợp
+                        save_portfolio(updated_portfolio)
+                        for order in auto_exec_orders:
+                            insert_log(order.model_dump())
+
+                    # Bước 5: Chuyển các lệnh BÁN vào danh sách chờ phê duyệt
+                    if pending_sells:
+                        st.session_state.pending_sell_orders.extend(pending_sells)
+
+                    # Feedback tổng hợp
                     msg_lines = []
-                    for order in orders:
+                    if auto_exec_orders:
+                        msg_lines.append("✅ **Đã thực thi thành công các lệnh mua/nắm giữ:**")
+                        for order in auto_exec_orders:
+                            msg_lines.append(
+                                f"- **{order.action} {order.volume} {order.ticker}** @ {order.price}  \n"
+                                f"  *Lý do:* {order.reason}"
+                            )
+                    if pending_sells:
                         msg_lines.append(
-                            f"- **{order.action} {order.volume} {order.ticker}** @ {order.price}  \n"
-                            f"  *Lý do:* {order.reason}"
+                            f"⏳ **Có {len(pending_sells)} lệnh bán đã được chuyển vào hàng chờ Chờ Phê Duyệt bên dưới.**"
                         )
+
                     st.session_state.exec_message = (
-                        "success",
-                        "✅ **Đã thực thi thành công danh sách lệnh:**\n\n" + "\n\n".join(msg_lines),
+                        "success" if auto_exec_orders else "info",
+                        "\n\n".join(msg_lines),
                     )
                     st.rerun()
 
@@ -168,8 +186,99 @@ with tab_trading:
             msg_type, msg_content = st.session_state.exec_message
             if msg_type == "success":
                 st.success(msg_content)
+            elif msg_type == "info":
+                st.info(msg_content)
             elif msg_type == "error":
                 st.error(msg_content)
+
+        # ── Hàng đợi Lệnh bán Chờ Phê duyệt ────────────────────────────
+        if st.session_state.pending_sell_orders:
+            st.divider()
+            st.subheader(f"⏳ Lệnh bán chờ phê duyệt ({len(st.session_state.pending_sell_orders)})")
+            st.caption("Các lệnh bán bên dưới chưa thực thi. Chỉ cập nhật danh mục & audit log khi bạn phê duyệt.")
+
+            # Thao tác hàng loạt nếu có nhiều hơn 1 lệnh
+            if len(st.session_state.pending_sell_orders) > 1:
+                btn_c1, btn_c2 = st.columns(2)
+                with btn_c1:
+                    if st.button("✅ Duyệt tất cả lệnh bán", type="primary", use_container_width=True, key="approve_all"):
+                        try:
+                            cur_p = load_portfolio()
+                            upd_p = copy.deepcopy(cur_p)
+                            approved_orders = list(st.session_state.pending_sell_orders)
+                            for o in approved_orders:
+                                upd_p = execute_order(o, upd_p)
+                                insert_log(o.model_dump())
+                            save_portfolio(upd_p)
+                            st.session_state.pending_sell_orders = []
+                            st.session_state.exec_message = (
+                                "success",
+                                f"✅ Đã phê duyệt và thực thi thành công tất cả {len(approved_orders)} lệnh bán!",
+                            )
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"❌ Lỗi khi duyệt tất cả: {e}")
+                with btn_c2:
+                    if st.button("❌ Hủy tất cả lệnh bán", use_container_width=True, key="reject_all"):
+                        count = len(st.session_state.pending_sell_orders)
+                        st.session_state.pending_sell_orders = []
+                        st.session_state.exec_message = (
+                            "info",
+                            f"ℹ️ Đã từ chối và hủy {count} lệnh bán chờ duyệt.",
+                        )
+                        st.rerun()
+
+            # Render thẻ từng lệnh
+            for idx, order in enumerate(list(st.session_state.pending_sell_orders)):
+                with st.expander(
+                    f"📌 Lệnh #{idx+1}: {order.action} {order.volume} {order.ticker} @ {order.price}",
+                    expanded=True,
+                ):
+                    col_info, col_act = st.columns([3, 2])
+                    with col_info:
+                        st.markdown(f"- **Mã Cổ Phiếu:** `{order.ticker}`")
+                        st.markdown(f"- **Hành Động:** `{order.action}`")
+                        st.markdown(f"- **Số Lượng:** `{order.volume}`")
+                        st.markdown(f"- **Giá Đặt:** `{order.price:,.2f}` (nghìn VND)")
+                        if isinstance(order.volume, (int, float)):
+                            est_val = order.volume * order.price * 1000
+                            st.markdown(f"- **Thu Về Dự Kiến:** `{est_val:,.0f} VND`")
+                        st.markdown(f"- **Lý Do (AI):** {order.reason}")
+
+                    with col_act:
+                        st.write(" ")
+                        if st.button(
+                            "✅ Phê duyệt Bán",
+                            key=f"approve_sell_{idx}_{order.ticker}",
+                            type="primary",
+                            use_container_width=True,
+                        ):
+                            try:
+                                cur_p = load_portfolio()
+                                upd_p = copy.deepcopy(cur_p)
+                                upd_p = execute_order(order, upd_p)
+                                save_portfolio(upd_p)
+                                insert_log(order.model_dump())
+                                st.session_state.pending_sell_orders.pop(idx)
+                                st.session_state.exec_message = (
+                                    "success",
+                                    f"✅ **Đã phê duyệt và thực thi bán thành công {order.volume} {order.ticker}** @ {order.price}!",
+                                )
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"❌ Lỗi thực thi lệnh bán: {e}")
+
+                        if st.button(
+                            "❌ Từ chối",
+                            key=f"reject_sell_{idx}_{order.ticker}",
+                            use_container_width=True,
+                        ):
+                            st.session_state.pending_sell_orders.pop(idx)
+                            st.session_state.exec_message = (
+                                "info",
+                                f"ℹ️ Đã từ chối lệnh bán {order.volume} {order.ticker}.",
+                            )
+                            st.rerun()
 
 # ── Tab 2: Analyst Agent ──────────────────────────────────────────
 with tab_analyst:
