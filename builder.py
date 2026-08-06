@@ -14,7 +14,7 @@ import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
 
-from news_scraper import get_latest_macro_news
+from news_scraper import get_market_news_context
 from market_data import VnStockProvider, MarketDataRouter, normalize_symbol
 
 load_dotenv()
@@ -197,12 +197,12 @@ def build_prompt(portfolio: dict) -> str:
     # Date Injection
     current_date = datetime.now().strftime("%Y-%m-%d")
 
-    # Scrape News (Fail-safe)
-    news_list = get_latest_macro_news(limit=3)
-    if news_list:
-        news_str = "; ".join(f"{i+1}. {title}" for i, title in enumerate(news_list))
-    else:
-        news_str = "Không có tin tức mới hoặc crawler lỗi mạng."
+    # Scrape and rank news by portfolio relevance (Fail-safe)
+    try:
+        news_str = get_market_news_context(holdings.keys(), limit=6)
+    except Exception as e:
+        print(f"[builder] News context error: {e}", file=sys.stderr)
+        news_str = "Không có tin tức liên quan đủ mạnh; ưu tiên dữ liệu giá, thanh khoản và quản trị rủi ro."
 
     # Dynamic config từ Analyst Agent
     cfg = load_prompt_config()
@@ -235,11 +235,13 @@ def build_prompt(portfolio: dict) -> str:
         f"[DATE]: {current_date}\n"
         f"[PORTFOLIO]: Tiền mặt: {cash_formatted}, Nắm giữ: {holdings_str}\n"
         f"[DATA]: {market_str}\n"
-        f"[NEWS]: {news_str}\n"
+        f"[NEWS CONTEXT]:\n{news_str}\n"
         f"[RISK PARAMS]: RSI oversold<{rsi_oversold} (mua), RSI overbought>{rsi_overbought} (bán). "
         f"Tỷ lệ tiền mặt tối thiểu: {max_cash_ratio*100:.0f}%. "
         f"Tỷ trọng tối đa 1 mã: {max_pos_ratio*100:.0f}% NAV.\n"
         f"[CYCLE BIAS]: {cycle_bias_text}\n"
+        f"[NEWS RULES]: Dùng tin tức để điều chỉnh xác suất và rủi ro theo mã/ngành/vĩ mô. "
+        f"Không BUY/SELL chỉ vì một headline; mỗi lý do phải kết hợp tin liên quan với [DATA], vị thế hiện có và [RISK PARAMS].\n"
         f"[TASK]: Đưa ra quyết định cho TẤT CẢ các mã đang nắm giữ. "
         f'Output phải đúng định dạng mảng: [{{"ticker": "...", "action": "...", "volume": ..., "price": ..., "reason": "..."}}]{extra_section}'
     )

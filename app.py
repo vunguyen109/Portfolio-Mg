@@ -83,9 +83,10 @@ with st.sidebar:
 # ── Main ──────────────────────────────────────────────────────────
 st.title("📊 Portfolio Manager")
 
-tab_trading, tab_analyst = st.tabs([
+tab_trading, tab_analyst, tab_portfolio = st.tabs([
     "💼 Giao dịch (Trading Desk)",
-    "🔬 Analyst Agent (Feedback Loop)"
+    "🔬 Analyst Agent (Feedback Loop)",
+    "⚙️ Quản lý Danh mục",
 ])
 
 # ── Tab 1: Trading Desk ───────────────────────────────────────────
@@ -394,3 +395,183 @@ with tab_analyst:
                     st.error(f"Lỗi khi apply config: {e}")
         else:
             st.success("Cấu hình prompt hiện tại đang tối ưu, không cần tinh chỉnh thêm.")
+
+# ── Tab 3: Quản lý Danh mục (CRUD) ───────────────────────────────
+with tab_portfolio:
+    st.subheader("⚙️ Quản lý Danh mục")
+    st.caption("Chỉnh sửa trực tiếp danh mục: tiền mặt, cổ phiếu đang nắm. Mọi thay đổi được lưu ngay vào portfolio.json.")
+
+    pf = load_portfolio()
+
+    # ────────────────────────────────────────────────────────────────
+    # SECTION 1 — Sửa tiền mặt (UPDATE cash)
+    # ────────────────────────────────────────────────────────────────
+    st.write("### 💰 Tiền mặt")
+    col_cash, col_cash_btn = st.columns([3, 1])
+    with col_cash:
+        new_cash = st.number_input(
+            "Số dư tiền mặt (VND)",
+            min_value=0.0,
+            value=float(pf.get("cash", 0)),
+            step=1_000_000.0,
+            format="%.0f",
+            key="crud_cash_input",
+        )
+    with col_cash_btn:
+        st.write(" ")
+        st.write(" ")
+        if st.button("💾 Lưu tiền mặt", use_container_width=True, key="crud_save_cash"):
+            pf["cash"] = float(new_cash)
+            save_portfolio(pf)
+            st.success(f"✅ Đã cập nhật tiền mặt: {new_cash:,.0f} VND")
+            st.rerun()
+
+    st.divider()
+
+    # ────────────────────────────────────────────────────────────────
+    # SECTION 2 — Thêm cổ phiếu mới (CREATE holding)
+    # ────────────────────────────────────────────────────────────────
+    st.write("### ➕ Thêm cổ phiếu mới")
+    with st.form(key="crud_add_holding_form", clear_on_submit=True):
+        col_add1, col_add2, col_add3 = st.columns(3)
+        with col_add1:
+            new_ticker = st.text_input(
+                "Mã cổ phiếu",
+                placeholder="VD: HPG",
+                key="crud_new_ticker",
+            ).strip().upper()
+        with col_add2:
+            new_qty = st.number_input(
+                "Số lượng (cổ phiếu)",
+                min_value=1,
+                value=100,
+                step=10,
+                key="crud_new_qty",
+            )
+        with col_add3:
+            new_avg = st.number_input(
+                "Giá trung bình (nghìn VND)",
+                min_value=0.0,
+                value=0.0,
+                step=0.1,
+                format="%.2f",
+                key="crud_new_avg",
+            )
+        submitted_add = st.form_submit_button("➕ Thêm vào danh mục", type="primary", use_container_width=True)
+
+    if submitted_add:
+        if not new_ticker or len(new_ticker) < 3:
+            st.error("❌ Mã cổ phiếu không hợp lệ — phải từ 3 ký tự trở lên.")
+        elif new_ticker in pf.get("holdings", {}):
+            st.warning(f"⚠️ Mã **{new_ticker}** đã tồn tại trong danh mục. Hãy sửa số lượng trong bảng bên dưới.")
+        else:
+            pf.setdefault("holdings", {})[new_ticker] = {
+                "quantity": int(new_qty),
+                "avg_price": float(new_avg),
+            }
+            save_portfolio(pf)
+            st.success(f"✅ Đã thêm **{new_ticker}** — {int(new_qty)} cổ phiếu @ {new_avg:.2f}")
+            st.rerun()
+
+    st.divider()
+
+    # ────────────────────────────────────────────────────────────────
+    # SECTION 3 — Sửa holdings (UPDATE via data_editor)
+    # ────────────────────────────────────────────────────────────────
+    st.write("### ✏️ Sửa danh sách nắm giữ")
+    holdings_now = pf.get("holdings", {})
+
+    if not holdings_now:
+        st.info("Danh mục trống. Thêm cổ phiếu ở phần bên trên.")
+    else:
+        # Chuyển holdings dict → list of rows để data_editor edit được
+        editor_rows = [
+            {"Mã": ticker, "Số lượng": info["quantity"], "Giá TB (nghìn VND)": info["avg_price"]}
+            for ticker, info in holdings_now.items()
+        ]
+
+        edited_df = st.data_editor(
+            editor_rows,
+            use_container_width=True,
+            hide_index=True,
+            num_rows="fixed",
+            column_config={
+                "Mã": st.column_config.TextColumn(disabled=True),
+                "Số lượng": st.column_config.NumberColumn(min_value=0, step=10, format="%d"),
+                "Giá TB (nghìn VND)": st.column_config.NumberColumn(min_value=0.0, step=0.01, format="%.2f"),
+            },
+            key="crud_holdings_editor",
+        )
+
+        if st.button("💾 Lưu thay đổi", type="primary", use_container_width=True, key="crud_save_holdings"):
+            updated_holdings = {}
+            has_error = False
+            for row in edited_df:
+                ticker_key = row["Mã"]
+                qty = int(row["Số lượng"])
+                avg = float(row["Giá TB (nghìn VND)"])
+                if qty < 0:
+                    st.error(f"❌ {ticker_key}: Số lượng không được âm.")
+                    has_error = True
+                    break
+                if qty > 0:  # bỏ qua nếu đã giảm về 0
+                    updated_holdings[ticker_key] = {"quantity": qty, "avg_price": avg}
+
+            if not has_error:
+                pf["holdings"] = updated_holdings
+                save_portfolio(pf)
+                st.success("✅ Đã lưu danh sách nắm giữ!")
+                st.rerun()
+
+    st.divider()
+
+    # ────────────────────────────────────────────────────────────────
+    # SECTION 4 — Xóa một mã (DELETE single holding)
+    # ────────────────────────────────────────────────────────────────
+    st.write("### 🗑️ Xóa cổ phiếu khỏi danh mục")
+    holdings_for_delete = pf.get("holdings", {})
+
+    if not holdings_for_delete:
+        st.info("Danh mục trống, không có gì để xóa.")
+    else:
+        col_del1, col_del2 = st.columns([3, 1])
+        with col_del1:
+            ticker_to_delete = st.selectbox(
+                "Chọn mã cần xóa",
+                options=list(holdings_for_delete.keys()),
+                key="crud_ticker_to_delete",
+            )
+        with col_del2:
+            st.write(" ")
+            st.write(" ")
+            if st.button(f"🗑️ Xóa {ticker_to_delete}", type="primary", use_container_width=True, key="crud_delete_btn"):
+                del pf["holdings"][ticker_to_delete]
+                save_portfolio(pf)
+                st.success(f"✅ Đã xóa **{ticker_to_delete}** khỏi danh mục.")
+                st.rerun()
+
+    st.divider()
+
+    # ────────────────────────────────────────────────────────────────
+    # SECTION 5 — Reset toàn bộ danh mục (DELETE all)
+    # ────────────────────────────────────────────────────────────────
+    st.write("### ⚠️ Reset danh mục")
+    st.warning("Thao tác này sẽ xóa toàn bộ cổ phiếu đang nắm và đặt lại tiền mặt về mức mặc định. Không thể hoàn tác.")
+
+    col_reset1, col_reset2 = st.columns([2, 1])
+    with col_reset1:
+        reset_cash_val = st.number_input(
+            "Tiền mặt sau khi reset (VND)",
+            min_value=0.0,
+            value=100_000_000.0,
+            step=10_000_000.0,
+            format="%.0f",
+            key="crud_reset_cash",
+        )
+    with col_reset2:
+        confirm_reset = st.checkbox("Tôi xác nhận muốn reset", key="crud_confirm_reset")
+
+    if st.button("🔄 Reset toàn bộ danh mục", disabled=not confirm_reset, use_container_width=True, key="crud_reset_btn"):
+        save_portfolio({"cash": float(reset_cash_val), "holdings": {}})
+        st.success(f"✅ Đã reset danh mục. Tiền mặt: {reset_cash_val:,.0f} VND, holdings: trống.")
+        st.rerun()
